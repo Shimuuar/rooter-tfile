@@ -1,7 +1,9 @@
 import Control.Applicative
 import Control.Monad
-import qualified Data.ByteString as BS
+import Data.List
+import qualified Data.ByteString      as BS
 import qualified Data.ByteString.Lazy as L
+import qualified Data.HashMap.Strict  as HM
 import Data.ByteString.Pretty
 
 import Data.Serialize
@@ -90,7 +92,7 @@ getRootObj off0 = do
     --
     let getOff = fromIntegral <$> getInt32le
     off <- getOff
-    when (off /= off0) $
+    when (off /= off0  &&  off /= 0) $
       fail $ printf "Bad offset %i instead of %i" off off0
     dir <- getOff
     --
@@ -117,6 +119,20 @@ getRootObj off0 = do
                      }
 
 
+getObjectMap :: BS.ByteString -> (RootHeader, [RootObj])
+getObjectMap bs
+  = (header, loop (rootBEGIN header))
+  where
+    header =
+      case runGet getRootHeader bs of
+        Right x -> x
+        Left  e -> error e
+    loop off | off >= rootEND header = []
+    loop off =
+      case runGet (getRootObj off) $ BS.drop (fromIntegral off) bs of
+        Right o -> o : loop (off + fromIntegral (objRawSize o))
+        Left  e -> error e
+
 ----------------------------------------------------------------
 getData :: Span -> BS.ByteString -> BS.ByteString
 getData (Span off n) = BS.take (fromIntegral n) . BS.drop (fromIntegral off)
@@ -134,23 +150,39 @@ go bs off n = do
          
 main = do
   bs <- BS.readFile "run-204-0020.root"
-  let Right h = runGet getRootHeader bs
+  let (h,objs) = getObjectMap bs
+  --
   putStrLn "== HEADER ================"
   putStrLn $ groom h
   --
-  putStrLn "-- Seek Info ----------------"
-  seekI <- goObj bs (case rootSeekInfo h of Span o _ -> o)
-  putStrLn ""
-  let o   = getData (objData seekI) bs
-      raw = decompress $ BS.drop 9 o
-  print $ HexPretty $ raw
+  let (Just hst) = find ((==4727374) . objOffset) objs
+  print hst
   --
-  -- Data compression:
-  --  * ZLib method
-  --     0-1 :  ZL
-  --     2   :  method
-  --     3-5 :  compressed size
-  --     6-9 :  uncompressed size
+  let o   = getData (objData hst) bs
+      raw = decompress $ BS.drop 9 o
+  print $ HexPretty raw
+  -- putStrLn "================================================================"
+  -- forM_ (filter ((/=0) . objOffset) objs) $ \o -> do
+    -- putStrLn $ groom o
+    -- putStrLn ""
+
+
+  -- -- SEEK INFO
+  -- putStrLn "-- Seek Info ----------------"
+  -- seekI <- goObj bs (case rootSeekInfo h of Span o _ -> o)
+  -- putStrLn ""
+  -- let o   = getData (objData seekI) bs
+  --     raw = decompress $ BS.drop 9 o
+  -- -- print $ HexPretty $ raw
+  -- -- 
+  -- go bs (rootBEGIN h) 3000
+  -- --
+  -- -- Data compression:
+  -- --  * ZLib method
+  -- --     0-1 :  ZL
+  -- --     2   :  method
+  -- --     3-5 :  compressed size
+  -- --     6-9 :  uncompressed size
 
 
   -- go bs (rootBEGIN h) 10
