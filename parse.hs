@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 import Control.Applicative
 import Control.Monad
 import Data.List
@@ -14,198 +15,65 @@ import Text.Groom
 import Text.Printf
 
 import qualified Codec.Compression.Zlib as GZip (compress,decompress)
-----------------------------------------------------------------
 
-type Offset = Int64
-
-data Span = Span Offset Int32
-          deriving Show
-
-data RootHeader = RootHeader
-  { rootVersion  :: Int32
-  , rootBEGIN    :: Offset
-  , rootEND      :: Offset
-  , rootFree     :: Span   -- ^ FREE data record
-  , rootNFree    :: Int32
-  , rootNBytes   :: Word8
-  , rootCompress :: Int32
-  , rootSeekInfo :: Span
-  , rootUUID     :: Word32
-  }
-  deriving Show
-
-
-data RootObj = RootObj
-  { objRawSize    :: Int32      -- ^ Uncompressed size
-  , objDataSize   :: Int32      -- ^ Compressed size
-  , objKeyVersion :: Int16
-  , objKeyLen     :: Int16
-  , objOffset     :: Offset
-  , objDirectory  :: Offset
-  , objDate       :: Int32
-  , objCycle      :: Int16
-  , objClass      :: String     -- ^
-  , objName       :: String     -- ^
-  , objTitle      :: String     -- ^
-  , objData       :: Span
-  }
-  deriving (Show)
+import HEP.ROOT.TFile.Types
+import HEP.ROOT.TFile.Parser
 
 ----------------------------------------------------------------
+-- Layout of data header
+--  0-1 : compression type
+--     ZL - zlib
+--     XZ - LZMA
+--     CS - old zlib
+--  2   :  method
+--  3-5 :  compressed size
+--  6-9 :  uncompressed size
+--
+-- Source: root/core/zip/src/ZInflate.c: R__unzip()
+--
+-- They how classes are deserialized is described in function
+-- `Streamer'
 
-getRootHeader :: Get RootHeader
-getRootHeader = do
-  skip 4                        -- CHECK "root"
-  v <- getInt32le
-  let getPtr | v < 100000 = fromIntegral <$> getInt32le
-             | otherwise  = getInt64le
-  beg   <- fromIntegral <$> getInt32le
-  end   <- getPtr
-  free  <- getPtr
-  nF    <- getInt32le
-  nFree <- getInt32le
-  skip 4
-  un <- getWord8
-  cmp <- getInt32le
-  stream <- Span <$> getPtr <*> getInt32le
-  uid <- get
-  return $ RootHeader { rootVersion  = v
-                      , rootBEGIN    = beg
-                      , rootEND      = end
-                      , rootFree     = Span free nF
-                      , rootNFree    = nFree
-                      , rootNBytes   = un
-                      , rootCompress = cmp
-                      , rootSeekInfo = stream
-                      , rootUUID     = uid
-                      }
-
-getRootObj :: Int64 -> Get RootObj
-getRootObj off0 = do
-  size  <- getInt32le
-  isolate (fromIntegral size - 4) $ do
-    keyV  <- getInt16le
-    sizeU <- getInt32le
-    date  <- getInt32le
-    keyL  <- getInt16le
-    cycl  <- getInt16le
-    --
-    let getOff = fromIntegral <$> getInt32le
-    off <- getOff
-    when (off /= off0  &&  off /= 0) $
-      fail $ printf "Bad offset %i instead of %i" off off0
-    dir <- getOff
-    --
-    let getStr = do n <- fromIntegral <$> getWord8
-                    replicateM n (toEnum . fromIntegral <$> getWord8)
-    classNm  <- getStr
-    objNm    <- getStr
-    title    <- getStr
-    dataSize <- remaining
-    getByteString dataSize
-    return $ RootObj { objRawSize    = size
-                     , objDataSize   = sizeU
-                     , objKeyVersion = keyV
-                     , objKeyLen     = keyL
-                     , objOffset     = off
-                     , objDirectory  = dir
-                     , objDate       = date
-                     , objCycle      = cycl
-                     , objClass      = classNm
-                     , objName       = objNm
-                     , objTitle      = title
-                     , objData       = Span (off + fromIntegral size - fromIntegral dataSize)
-                                            (fromIntegral dataSize)
-                     }
-
-
-getObjectMap :: BS.ByteString -> (RootHeader, [RootObj])
-getObjectMap bs
-  = (header, loop (rootBEGIN header))
-  where
-    header =
-      case runGet getRootHeader bs of
-        Right x -> x
-        Left  e -> error e
-    loop off | off >= rootEND header = []
-    loop off =
-      case runGet (getRootObj off) $ BS.drop (fromIntegral off) bs of
-        Right o -> o : loop (off + fromIntegral (objRawSize o))
-        Left  e -> error e
-
-----------------------------------------------------------------
+-- Slice of the data
 getData :: Span -> BS.ByteString -> BS.ByteString
-getData (Span off n) = BS.take (fromIntegral n) . BS.drop (fromIntegral off)
+getData (Span off n)
+  = BS.take (fromIntegral n) . BS.drop (fromIntegral off)
 
-goObj bs off = do
-  case runGet (getRootObj off) $ BS.drop (fromIntegral off) bs of
-    Right x -> do putStrLn $ groom x
-                  return x
-    Left  e -> error e
+-- Get raw uncompressed data
+getObjectData :: BS.ByteString -> RootObj -> BS.ByteString
+getObjectData bs o
+  | objDataSize o == fromIntegral n = raw
+  -- Data is compressed.
+  | n < 9                 = error "BAD header"
+  | BS.take 2 raw == "ZL" = decompress $ BS.drop 9 raw
+  | otherwise             = error "Something went wrong"
+  where
+    raw = getData (objData o) bs
+    n   = BS.length raw
 
-go _  _   0 = return ()
-go bs off n = do
-  o1 <- goObj bs off
-  go bs (off + fromIntegral (objRawSize o1)) (n - 1)
-         
+dumpObject :: BS.ByteString -> RootObj -> IO ()
+dumpObject bs obj = do
+  putStrLn "================================================================"
+  putStrLn $ groom obj
+  print $ HexPretty $ getObjectData bs obj
+
+
+main :: IO ()
 main = do
-  bs <- BS.readFile "run-204-0020.root"
+  bs <- BS.readFile "tst.root"
   let (h,objs) = getObjectMap bs
   --
   putStrLn "== HEADER ================"
   putStrLn $ groom h
   --
-  let (Just hst) = find ((==4727374) . objOffset) objs
-  print hst
+  putStrLn "== OBJS  ================"
+  mapM_ (putStrLn . groom) objs
   --
-  let o   = getData (objData hst) bs
-      raw = decompress $ BS.drop 9 o
-  print $ HexPretty raw
-  -- putStrLn "================================================================"
-  -- forM_ (filter ((/=0) . objOffset) objs) $ \o -> do
-    -- putStrLn $ groom o
-    -- putStrLn ""
-
-
-  -- -- SEEK INFO
-  -- putStrLn "-- Seek Info ----------------"
-  -- seekI <- goObj bs (case rootSeekInfo h of Span o _ -> o)
-  -- putStrLn ""
-  -- let o   = getData (objData seekI) bs
-  --     raw = decompress $ BS.drop 9 o
-  -- -- print $ HexPretty $ raw
-  -- -- 
-  -- go bs (rootBEGIN h) 3000
-  -- --
-  -- -- Data compression:
-  -- --  * ZLib method
-  -- --     0-1 :  ZL
-  -- --     2   :  method
-  -- --     3-5 :  compressed size
-  -- --     6-9 :  uncompressed size
-
-
-  -- go bs (rootBEGIN h) 10
-
-  -- o1 <- goObj bs off1
-  -- let off2 = off1 + fromIntegral (objRawSize o1)
-  -- o2 <- goObj bs off2
-  -- --
-  -- let off3 = off2 + fromIntegral (objRawSize o2)
-  -- print off3
-  -- o3 <- goObj bs off3
+  mapM_ (dumpObject bs) $ filter ((=="TNamed") . objClass) objs
+  --
   return ()
 
-getInt16le :: Get Int16
-getInt16le = get
-
-getInt32le :: Get Int32
-getInt32le = get
-
-getInt64le :: Get Int64
-getInt64le = get
-
-
+----------------------------------------------------------------
 -- Helper for gzip
 withLazyBS :: (L.ByteString -> L.ByteString) -> BS.ByteString -> BS.ByteString
 withLazyBS f = BS.concat . L.toChunks . f . L.fromChunks . pure
