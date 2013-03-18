@@ -16,6 +16,7 @@ import qualified Data.ByteString      as BS
 import Text.Printf
 
 import HEP.ROOT.TFile.Types
+import HEP.ROOT.TFile.Get
 
 
 ----------------------------------------------------------------
@@ -26,18 +27,18 @@ import HEP.ROOT.TFile.Types
 getRootHeader :: Get RootHeader
 getRootHeader = do
   skip 4                        -- CHECK "root"
-  v <- getInt32le
-  let getPtr | v < 100000 = fromIntegral <$> getInt32le
-             | otherwise  = getInt64le
-  beg    <- fromIntegral <$> getInt32le
+  v <- getInt32be
+  let getPtr | v < 100000 = fromIntegral <$> getInt32be
+             | otherwise  = getInt64be
+  beg    <- fromIntegral <$> getInt32be
   end    <- getPtr
   free   <- getPtr
-  nF     <- getInt32le
-  nFree  <- getInt32le
+  nF     <- getInt32be
+  nFree  <- getInt32be
   skip 4               -- Number of bytes in TNamed at creation time
   un     <- getWord8
-  cmp    <- getInt32le
-  stream <- Span <$> getPtr <*> getInt32le
+  cmp    <- getInt32be
+  stream <- Span <$> getPtr <*> getInt32be
   uid    <- get
   return $ RootHeader { rootVersion  = v
                       , rootBEGIN    = beg
@@ -53,25 +54,23 @@ getRootHeader = do
 -- | Get ROOT object. This parser doesn't consume data payload.
 getRootObj :: Int64 -> Get RootObj
 getRootObj off0 = do
-  size  <- getInt32le
+  size  <- getInt32be
   isolate (fromIntegral size - 4) $ do
-    keyV  <- getInt16le
-    sizeU <- getInt32le
-    date  <- getInt32le
-    keyL  <- getInt16le
-    cycl  <- getInt16le
+    keyV  <- getInt16be
+    sizeU <- getInt32be
+    date  <- getInt32be
+    keyL  <- getInt16be
+    cycl  <- getInt16be
     --
-    let getOff = fromIntegral <$> getInt32le
+    let getOff = fromIntegral <$> getInt32be
     off <- getOff
     when (off /= off0  &&  off /= 0) $
       fail $ printf "Bad offset %i instead of %i" off off0
     dir <- getOff
     --
-    let getStr = do n <- fromIntegral <$> getWord8
-                    replicateM n (toEnum . fromIntegral <$> getWord8)
-    classNm  <- getStr
-    objNm    <- getStr
-    title    <- getStr
+    classNm  <- getRootString
+    objNm    <- getRootString
+    title    <- getRootString
     dataSize <- remaining
     skip dataSize
     return $ RootObj { objRawSize    = size
@@ -105,17 +104,3 @@ getObjectMap bs
       case runGet (getRootObj off) $ BS.drop (fromIntegral off) bs of
         Right o -> o : loop (off + fromIntegral (objRawSize o))
         Left  e -> error e
-
-
-----------------------------------------------------------------
--- Helpers
-----------------------------------------------------------------
-
-getInt16le :: Get Int16
-getInt16le = fromIntegral <$> getWord16be
-
-getInt32le :: Get Int32
-getInt32le =  fromIntegral <$> getWord32be
-
-getInt64le :: Get Int64
-getInt64le = fromIntegral <$> getWord64be
