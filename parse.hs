@@ -42,6 +42,6 @@ main = do
   putStrLn "== OBJS  ================"
   mapM_ (putStrLn . groom) objs
   --
-  mapM_ (dumpObject bs) $ filter ((=="TNamed") . objClass) objs
+  mapM_ (dumpObject bs) $ filter ((=="TH1I") . objClass) objs
   --
   return ()

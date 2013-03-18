@@ -3,13 +3,9 @@ void test () {
     TFile f("tst.root", "RECREATE");
     f.cd();
    
-    TNamed nm("ZZZZ","XXXX");
-    nm.Write("named");
-
-    TNamed nm2("ZAAZZZ","XXAAXX");
-    nm2.Write("named2");
-
-    TNamed nm3("ZAAZZZ","XXAAXX");
-    nm3.Write("named3");
-    std::cout << nm3.GetUniqueID() << std::endl;
+    TH1I h("HIST","hist", 10,0, 10);
+    for( int i = 0; i < 10; i++) {
+        h.Fill( i+0.1, 256 + i );
+    }
+    h.Write("hist");
 }
