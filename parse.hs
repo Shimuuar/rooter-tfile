@@ -28,7 +28,7 @@ dumpObject bs obj = do
   let raw = getObjectData bs obj
   print $ HexPretty raw
   putStrLn "-----"
-  print $ runGet getTNamed raw
+  print $ runGet getTH1I raw
 
 
 main :: IO ()
@@ -42,6 +42,6 @@ main = do
   putStrLn "== OBJS  ================"
   mapM_ (putStrLn . groom) objs
   --
-  mapM_ (dumpObject bs) $ filter ((=="TH1I") . objClass) objs
+  mapM_ (dumpObject bs) $ take 2 $ filter ((=="TH1I") . objClass) objs
   --
   return ()

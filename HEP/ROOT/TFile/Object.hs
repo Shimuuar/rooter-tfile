@@ -9,13 +9,18 @@ module HEP.ROOT.TFile.Object (
     -- ** TObject
   , getTObject
   , getTNamed
+  , getTH1I
+    -- * Helpers
+  , skipRootObject
   ) where
 -- Data format for every class is described in the `Streamer' method.
 
 import Control.Applicative
 import Control.Monad
 import Data.Bits
+import Data.Int
 import Data.Serialize.Get
+import Data.Serialize.IEEE754
 import qualified Codec.Compression.Zlib as GZip (compress,decompress)
 import qualified Data.ByteString        as BS
 import qualified Data.ByteString.Lazy as L
@@ -72,16 +77,12 @@ getData (Span off n)
 -- | Deserialize TObject. No useful data is retained.
 getTObject :: Get ()
 getTObject = do
-  ver <- getInt16be
-  when (ver .&. kByteCountMask /= 0) $ do
-    skip 4
+  void getVersion
   -- We need to skip 2 additional bytes. I couldn't figure where they
   -- are consumed.
   skip 2
   -- Skip unique ID and bit mask
   skip 8
-  where
-    kByteCountMask = 0x4000
 
 -- | Parse TNamed
 getTNamed :: Get (String,String)
@@ -89,6 +90,50 @@ getTNamed = do
   getTObject
   (,) <$> getRootString <*> getRootString
 
+-- getTH1I :: Get ()
+getTH1I = do
+  void getVersion
+  void getVersion
+  nm1 <- getTNamed
+  skipRootObject                -- TAttLine
+  skipRootObject                -- TAttFill
+  skipRootObject                -- TAttMarker
+  nCell <- getInt32be           --
+  -- X axis
+  v   <- getVersion
+  nmX <- getTNamed
+  skipRootObject                -- TAttAxis
+  nBins <- getInt32be
+  xMin <- getFloat32be
+  xMax <- getFloat32be
+  return (nCell,nm1,nmX,v,nBins,xMin,xMax)
+  
+readVersion :: Get Int16
+readVersion = do
+  n <- getVersion
+  case n of
+    0 -> fail "Cannot handle version 0"
+    1 -> return 1
+    _ -> fail "Cannot handle version above 1"
+
+getVersion :: Get Int16
+getVersion = do
+  ver <- getInt16be
+  if (ver .&. kByteCountMask /= 0)
+    then skip 2 >> getInt16be
+    else return ver
+
+-- | Skip ROOT object without actually decoding it
+skipRootObject :: Get ()
+skipRootObject = do
+  n <- getInt16be
+  unless (n .&. kByteCountMask /= 0)
+    $ fail "No byte length mask"
+  skip . fromIntegral =<< getInt16be
+
+
+kByteCountMask :: Int16
+kByteCountMask = 0x4000
 
 ----------------------------------------------------------------
 -- Helpers
